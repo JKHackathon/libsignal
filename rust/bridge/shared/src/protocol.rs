@@ -1105,6 +1105,23 @@ async fn SessionCipher_EncryptMessage(
     .await
 }
 
+#[bridge_fn(ffi = "encrypt_timestamp")]
+async fn MessageCipher_EncryptTimestamp(
+    timestamp: u32,
+    protocol_address: &ProtocolAddress,
+    session_store: &mut dyn SessionStore,
+    identity_key_store: &mut dyn IdentityKeyStore
+) -> Result<u32> {
+    timestamp_encrypt(
+        timestamp,
+        protocol_address,
+        session_store,
+        identity_key_store,
+    ).await
+}
+
+
+
 #[bridge_fn(ffi = "decrypt_message")]
 async fn SessionCipher_DecryptSignalMessage(
     message: &SignalMessage,

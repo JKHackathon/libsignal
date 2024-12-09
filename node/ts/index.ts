@@ -1431,6 +1431,19 @@ export async function signalEncrypt(
   );
 }
 
+export function signalEncryptTimestamp(
+  timestamp : number, 
+  address: ProtocolAddress,
+  sessionStore: SessionStore,
+  identityStore: IdentityKeyStore,): Promise<number>{
+    return Native.MessageCipher_EncryptTimestamp(
+      timestamp,
+      address,
+      sessionStore,
+      identityStore
+    )
+}
+
 export function signalDecrypt(
   message: SignalMessage,
   address: ProtocolAddress,

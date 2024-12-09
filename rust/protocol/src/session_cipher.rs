@@ -5,7 +5,9 @@
 
 use std::time::SystemTime;
 
+use hmac::{Hmac, Mac};
 use rand::{CryptoRng, Rng};
+use sha2::Sha256;
 
 use crate::consts::{MAX_FORWARD_JUMPS, MAX_UNACKNOWLEDGED_SESSION_AGE};
 use crate::ratchet::{ChainKey, MessageKeys};
@@ -15,6 +17,40 @@ use crate::{
     KyberPayload, KyberPreKeyStore, PreKeySignalMessage, PreKeyStore, ProtocolAddress, PublicKey,
     Result, SessionRecord, SessionStore, SignalMessage, SignalProtocolError, SignedPreKeyStore,
 };
+
+pub async fn timestamp_encrypt(
+    timestamp: u32,
+    remote_address: &ProtocolAddress,
+    session_store: &mut dyn SessionStore,
+    identity_store: &mut dyn IdentityKeyStore
+) -> Result<u32> {
+    let mut session_record = session_store
+        .load_session(remote_address)
+        .await?
+        .ok_or_else(|| SignalProtocolError::SessionNotFound(remote_address.clone()))?;
+    let session_state = session_record
+        .session_state_mut()
+        .ok_or_else(|| SignalProtocolError::SessionNotFound(remote_address.clone()))?;
+
+    let chain_key = session_state.get_sender_chain_key()?;
+
+    let message_keys = chain_key.message_keys();
+
+    type HmacSha256 = Hmac<Sha256>;
+    let mac = <HmacSha256 as Mac>::new_from_slice(message_keys.cipher_key()).expect("HMAC can take a key of any size");
+    let result = mac.finalize();
+    let hash_bytes = result.into_bytes();
+
+    let otp = u32::from_be_bytes([
+        hash_bytes[0],
+        hash_bytes[1],
+        hash_bytes[2],
+        hash_bytes[3],
+    ]) % 100000;
+
+    Ok((timestamp + otp) % 100000)
+}
+
 
 pub async fn message_encrypt(
     ptext: &[u8],
