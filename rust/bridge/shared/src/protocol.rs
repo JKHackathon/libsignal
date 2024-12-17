@@ -1095,6 +1095,7 @@ async fn SessionCipher_EncryptMessage(
     identity_key_store: &mut dyn IdentityKeyStore,
     now: Timestamp,
 ) -> Result<CiphertextMessage> {
+    log::info!("Secret message key: SessionCipher_EncryptMessage");
     message_encrypt(
         ptext,
         protocol_address,
@@ -1109,14 +1110,27 @@ async fn SessionCipher_EncryptMessage(
 async fn MessageCipher_EncryptTimestamp(
     timestamp: u32,
     protocol_address: &ProtocolAddress,
-    session_store: &mut dyn SessionStore,
-    identity_key_store: &mut dyn IdentityKeyStore
+    session_store: &mut dyn SessionStore
 ) -> Result<u32> {
     timestamp_encrypt(
         timestamp,
         protocol_address,
         session_store,
-        identity_key_store,
+    ).await
+}
+
+#[bridge_fn(ffi = "decrypt_timestamp")]
+async fn MessageCipher_DecryptTimestamp(
+    message: &[u8],
+    timestamp: u32,
+    identity_store: &mut dyn IdentityKeyStore,
+    session_store: &mut dyn SessionStore
+) -> Result<u32> {
+    timestamp_decrypt(
+        message,
+        timestamp,
+        identity_store,
+        session_store,
     ).await
 }
 

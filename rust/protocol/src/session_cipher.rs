@@ -13,16 +13,13 @@ use crate::consts::{MAX_FORWARD_JUMPS, MAX_UNACKNOWLEDGED_SESSION_AGE};
 use crate::ratchet::{ChainKey, MessageKeys};
 use crate::state::{InvalidSessionError, SessionState};
 use crate::{
-    session, CiphertextMessage, CiphertextMessageType, Direction, IdentityKeyStore, KeyPair,
-    KyberPayload, KyberPreKeyStore, PreKeySignalMessage, PreKeyStore, ProtocolAddress, PublicKey,
-    Result, SessionRecord, SessionStore, SignalMessage, SignalProtocolError, SignedPreKeyStore,
+    sealed_sender_decrypt_to_usmc, session, CiphertextMessage, CiphertextMessageType, Direction, IdentityKeyStore, KeyPair, KyberPayload, KyberPreKeyStore, PreKeySignalMessage, PreKeyStore, ProtocolAddress, PublicKey, Result, SessionRecord, SessionStore, SignalMessage, SignalProtocolError, SignedPreKeyStore, UnidentifiedSenderMessageContent
 };
 
 pub async fn timestamp_encrypt(
     timestamp: u32,
     remote_address: &ProtocolAddress,
-    session_store: &mut dyn SessionStore,
-    identity_store: &mut dyn IdentityKeyStore
+    session_store: &mut dyn SessionStore
 ) -> Result<u32> {
     let mut session_record = session_store
         .load_session(remote_address)
@@ -36,6 +33,8 @@ pub async fn timestamp_encrypt(
 
     let message_keys = chain_key.message_keys();
 
+    log::warn!("Secret Timestamp_encrypt message key: {:?}", message_keys.cipher_key());
+
     type HmacSha256 = Hmac<Sha256>;
     let mac = <HmacSha256 as Mac>::new_from_slice(message_keys.cipher_key()).expect("HMAC can take a key of any size");
     let result = mac.finalize();
@@ -48,7 +47,90 @@ pub async fn timestamp_encrypt(
         hash_bytes[3],
     ]) % 100000;
 
+    // TODO: this is just reusing the same chain keys, i could recursively go down the list, but this might break with DH ratchet (maybe above ~line 34)
+    // session_state.set_sender_chain_key(&chain_key.next_chain_key());
+
+    // TODO: uncomment? No beacuse i dont want to reuse keys for message encryption.
+    // session_store
+    //     .store_session(remote_address, &session_record)
+    //     .await?;
+    log::warn!("Secret encrypted timestamp: {} otp: {} encrypted: {}", timestamp, otp, (timestamp + otp) % 100000);
+
     Ok((timestamp + otp) % 100000)
+}
+
+pub async fn timestamp_decrypt(
+    ciphertext: &[u8],
+    timestamp: u32,
+    identity_store: &mut dyn IdentityKeyStore,
+    session_store: &mut dyn SessionStore,
+) -> Result<u32> {
+    let usmc = sealed_sender_decrypt_to_usmc(ciphertext, identity_store).await?;
+    let remote_address = &ProtocolAddress::new(
+        usmc.sender()?.sender_uuid()?.to_string(),
+        usmc.sender()?.sender_device_id()?,
+    );
+
+    let mut session_record = session_store
+        .load_session(remote_address)
+        .await?
+        .ok_or_else(|| SignalProtocolError::SessionNotFound(remote_address.clone()))?;
+    let session_state = session_record
+        .session_state_mut()
+        .ok_or_else(|| SignalProtocolError::SessionNotFound(remote_address.clone()))?;
+
+    log::warn!("Secret libsignal: usmc type {:?}", usmc.msg_type());
+
+    let message = match usmc.msg_type()? {
+        CiphertextMessageType::Whisper => {
+            let ctext = SignalMessage::try_from(usmc.contents()?)?;
+            let their_ephemeral = ctext.sender_ratchet_key();
+            let csprng = &mut rand::rngs::OsRng;
+            let counter = ctext.counter();
+            let chain_key = get_or_create_chain_key(session_state, their_ephemeral, remote_address, csprng)?;
+            log::info!("Secret timestamp_decrypt");
+            let message_keys = get_or_create_message_key(
+                session_state,
+                their_ephemeral,
+                remote_address,
+                CiphertextMessageType::Whisper,
+                &chain_key,
+                counter,
+            )?;
+            log::warn!("Secret timestamp_decrypt message key: {:?}", message_keys.cipher_key());
+
+            type HmacSha256 = Hmac<Sha256>;
+            let mac = <HmacSha256 as Mac>::new_from_slice(message_keys.cipher_key()).expect("HMAC can take a key of any size");
+            let result = mac.finalize();
+            let hash_bytes = result.into_bytes();
+
+            let otp = u32::from_be_bytes([
+                hash_bytes[0],
+                hash_bytes[1],
+                hash_bytes[2],
+                hash_bytes[3],
+            ]) % 100000;
+
+            log::warn!("Secret decrypted timestamp: {} otp: {} decrypted: {}", timestamp, otp, (timestamp - otp) % 100000);
+
+            // session_store
+            //     .store_session(&remote_address, &session_record)
+            //     .await?;
+
+            (timestamp - otp + 100000) % 100000
+        }
+        CiphertextMessageType::PreKey => {
+            let _ctext = PreKeySignalMessage::try_from(usmc.contents()?)?;
+            5
+        }
+        msg_type => {
+            return Err(SignalProtocolError::InvalidMessage(
+                msg_type,
+                "unexpected message type for sealed_sender_decrypt",
+            ));
+        }
+    };
+    Ok(message)
 }
 
 
@@ -85,6 +167,9 @@ pub async fn message_encrypt(
             format!("no remote identity key for {}", remote_address),
         )
     })?;
+
+    log::warn!("Secret message_encrypt message key: {:?}", message_keys.cipher_key());
+
 
     let ctext =
         signal_crypto::aes_256_cbc_encrypt(ptext, message_keys.cipher_key(), message_keys.iv())
@@ -622,6 +707,7 @@ fn decrypt_message_with_state<R: Rng + CryptoRng>(
     let their_ephemeral = ciphertext.sender_ratchet_key();
     let counter = ciphertext.counter();
     let chain_key = get_or_create_chain_key(state, their_ephemeral, remote_address, csprng)?;
+    log::info!("Secret decrypt_message_with_state");
     let message_keys = get_or_create_message_key(
         state,
         their_ephemeral,
@@ -650,6 +736,8 @@ fn decrypt_message_with_state<R: Rng + CryptoRng>(
             "MAC verification failed",
         ));
     }
+
+    log::warn!("Secret message_decrypt message key: {:?}", message_keys.cipher_key());
 
     let ptext = match signal_crypto::aes_256_cbc_decrypt(
         ciphertext.body(),

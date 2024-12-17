@@ -1432,16 +1432,29 @@ export async function signalEncrypt(
 }
 
 export function signalEncryptTimestamp(
-  timestamp : number, 
+  timestamp: number,
   address: ProtocolAddress,
-  sessionStore: SessionStore,
-  identityStore: IdentityKeyStore,): Promise<number>{
-    return Native.MessageCipher_EncryptTimestamp(
-      timestamp,
-      address,
-      sessionStore,
-      identityStore
-    )
+  sessionStore: SessionStore
+): Promise<number> {
+  return Native.MessageCipher_EncryptTimestamp(
+    timestamp,
+    address,
+    sessionStore
+  );
+}
+
+export function signalDecryptTimestamp(
+  message: Buffer,
+  timestamp: number,
+  identityStore: IdentityKeyStore,
+  sessionStore: SessionStore
+): Promise<number> {
+  return Native.MessageCipher_DecryptTimestamp(
+    message,
+    timestamp,
+    identityStore,
+    sessionStore
+  );
 }
 
 export function signalDecrypt(
